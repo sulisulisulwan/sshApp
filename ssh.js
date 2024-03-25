@@ -5,6 +5,7 @@ dotenv.config({ path: './.env' })
 
 const sshInit = () => {
   const connection = new MySSLConnection()
+  return connection
 }
 
 //when server turns on we create a reusable MySSLConnection instance
@@ -20,10 +21,12 @@ class MySSLConnection {
 
   constructor() {
     this.connection = null 
-    this.init()
+    this.timeout = null
+    this.stream = null
+    this.command = null
   }
 
-  init() {
+  init(cb) {
     this.connection = new SSH.Client().connect({
       host: process.env.HOST,
       port: process.env.PORT,
@@ -31,38 +34,62 @@ class MySSLConnection {
       privateKey: readFileSync(process.env.PRIVATE_KEY_PATH, 'utf8')
     })
 
-    this.connection.on('ready', () => {
-      console.log('Client :: ready');
-      this.connection.shell((err, stream) => {
-        if (err) throw err;
-        this.onData(stream)
-        this.onDataEnd(stream)
-        this.onClose(stream)
-      });
+    this.connection.on('ready', cb)
+  }
 
+  execCommand(command) {
+    this.command = command
+    if (this.connection === null) {
+      this.init(() => {
+        console.log('Client :: ready');
+  
+        this.connection.shell((err, stream) => {
+          if (err) throw err;
+          this.stream = stream
+          this.onData()
+          this.onDataEnd(() => {
+            this.stream.write(command + '\n')
+          })
+          this.onClose()
+        });
+  
+      })
+
+      return
+    }
+
+    clearTimeout(this.timeout)
+    this.timeout = null
+
+    this.onDataEnd(() => {
+      this.stream.write(command + '\n')
     })
   }
 
-  command() {
-    if (this.connection === null) {
-      this.init()
-    }
-  }
-
-  onData(stream) {
-    stream.on('data', (data) => {
+  onData() {
+    this.stream.on('data', (data) => {
       console.log('' + data);
     })
   }
 
-  onDataEnd(stream) {
-    // stream.end('ls -l\nexit\n');
+  onDataEnd(cb) {
+    let stream = this.stream
+    // at the end of a data stream, execute the next command
+    cb()
+
+    // set the ssh timeout
+    this.timeout = setTimeout(function () {
+      stream.end('ls -l\nexit\n');
+      clearTimeout(this.timeout)
+      this.timeout = null
+    }, 5000)
   }
 
-  onClose(stream) {
-    stream.on('close', () => {
+  onClose() {
+    this.stream.on('close', () => {
       console.log('Stream :: close');
       this.connection.end();
+      this.connection = null
     })
   }
 
